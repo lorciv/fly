@@ -1,0 +1,16 @@
+migrate [OPTS] CMD
+
+OPTS:
+- sourcedir (default "migrations")
+- database (default from PG environment variables)
+
+CMD:
+- status
+- up
+- down
+
+MIGRATIONS:
+- 001_initialize_schema.down.sql
+- 001_inizialize_schema.up.sql
+- 002_add_table.down.sql
+- 002_add_table.up.sql
