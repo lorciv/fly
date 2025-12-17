@@ -1,18 +1,59 @@
 package main
 
 import (
+	"database/sql"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"strconv"
 	"strings"
+	"text/tabwriter"
+	"time"
+
+	_ "github.com/lib/pq"
 )
+
+func initialize(db *sql.DB) error {
+	_, err := db.Exec("CREATE TABLE IF NOT EXISTS migration (id VARCHAR(256) PRIMARY KEY, applied TIMESTAMP DEFAULT current_timestamp)")
+	if err != nil {
+		return fmt.Errorf("could not create migration table: %v", err)
+	}
+	return nil
+}
+
+type migration struct {
+	id      string
+	applied time.Time
+}
+
+// readDB reads all migrations that have been executed on the database.
+func readDB(db *sql.DB) ([]migration, error) {
+	rows, err := db.Query("SELECT id, applied FROM migration ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []migration
+	for rows.Next() {
+		var r migration
+		if err := rows.Scan(&r.id, &r.applied); err != nil {
+			return nil, err
+		}
+		records = append(records, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
 
 var sourcedir = flag.String("sourcedir", "migrations", "directory that contains database migration files")
 
 func main() {
 	log.SetFlags(0)
+	log.SetPrefix("fly: ")
 
 	flag.Parse()
 
@@ -22,6 +63,39 @@ func main() {
 
 	cmd := flag.Arg(0)
 	switch cmd {
+	case "init":
+		db, err := sql.Open("postgres", "")
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := db.Ping(); err != nil {
+			log.Fatal(err)
+		}
+
+		if err := initialize(db); err != nil {
+			log.Fatal(err)
+		}
+	case "status":
+		db, err := sql.Open("postgres", "")
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := db.Ping(); err != nil {
+			log.Fatal(err)
+		}
+
+		migrations, err := readDB(db)
+		if err != nil {
+			log.Fatal(err)
+		}
+		writer := tabwriter.NewWriter(os.Stdout, 1, 3, 1, ' ', 0)
+		format := "%s\t%s\n"
+		fmt.Fprintf(writer, format, "ID", "APPLIED")
+		fmt.Fprintf(writer, format, "--", "-------")
+		for _, m := range migrations {
+			fmt.Fprintf(writer, format, m.id, m.applied.Format(time.DateTime))
+		}
+		writer.Flush()
 	case "new":
 		last := "0000_unnamed.up.sql"
 		entries, err := os.ReadDir(*sourcedir)
