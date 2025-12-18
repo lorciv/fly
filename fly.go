@@ -224,6 +224,50 @@ func main() {
 		if err := tx.Commit(); err != nil {
 			log.Fatal(err)
 		}
+	case "down":
+		db, err := sql.Open("postgres", "")
+		if err != nil {
+			log.Fatal(err)
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer tx.Rollback()
+
+		n := 1
+		if arg := flag.Arg(1); arg != "" {
+			var err error
+			n, err = strconv.Atoi(arg)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		_ = n
+
+		migrations, err := listRun(db)
+		if err != nil {
+			log.Fatal(err)
+		}
+		for i := 0; i < n; i++ {
+			j := len(migrations) - 1 - i
+			if j < 0 {
+				break
+			}
+			id := migrations[j].id
+			filename := fmt.Sprintf("%s/%s.down.sql", *sourcedir, id)
+			if err := run(tx, filename); err != nil {
+				log.Fatal(err)
+			}
+			if err := unregister(tx, id); err != nil {
+				log.Fatal(err)
+			}
+			fmt.Println(id)
+		}
+
+		if err := tx.Commit(); err != nil {
+			log.Fatal(err)
+		}
 	default:
 		log.Fatal("unknown cmd")
 	}
