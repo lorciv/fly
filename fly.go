@@ -30,7 +30,7 @@ type migration struct {
 
 // listRun reads all migrations that have been executed on the database.
 func listRun(db *sql.DB) ([]migration, error) {
-	rows, err := db.Query("SELECT id, applied FROM migration ORDER BY id")
+	rows, err := db.Query("SELECT id, applied FROM migration ORDER BY applied, id")
 	if err != nil {
 		return nil, err
 	}
