@@ -16,7 +16,8 @@ import (
 	_ "github.com/lib/pq"
 )
 
-func initialize(db *sql.DB) error {
+// initMigrationTable ensures that the migration table on the database is present.
+func initMigrationTable(db *sql.DB) error {
 	_, err := db.Exec("CREATE TABLE IF NOT EXISTS migration (id VARCHAR(256) PRIMARY KEY, applied TIMESTAMP DEFAULT current_timestamp)")
 	if err != nil {
 		return fmt.Errorf("could not create migration table: %v", err)
@@ -24,13 +25,14 @@ func initialize(db *sql.DB) error {
 	return nil
 }
 
+// migration represents a migration applied to the database.
 type migration struct {
 	id      string
 	applied time.Time
 }
 
-// listRun reads all migrations that have been executed on the database.
-func listRun(db *sql.DB) ([]migration, error) {
+// listAppliedMigrations reads all migrations that have been executed on the database.
+func listAppliedMigrations(db *sql.DB) ([]migration, error) {
 	rows, err := db.Query("SELECT id, applied FROM migration ORDER BY applied, id")
 	if err != nil {
 		return nil, err
@@ -51,7 +53,8 @@ func listRun(db *sql.DB) ([]migration, error) {
 	return records, nil
 }
 
-func hasRun(db *sql.DB, migration string) (bool, error) {
+// isMigrationApplied checks if the migration has run on the database.
+func isMigrationApplied(db *sql.DB, migration string) (bool, error) {
 	var found int
 	err := db.QueryRow("SELECT 1 FROM migration WHERE id = $1", migration).Scan(&found)
 	if err == sql.ErrNoRows {
@@ -63,8 +66,8 @@ func hasRun(db *sql.DB, migration string) (bool, error) {
 	return true, nil
 }
 
-// listDir reads all migrations from the directory "migrations" sorted by increasing ID.
-func listDir() ([]string, error) {
+// listDirMigrations reads all migrations from the configured directory, sorted by increasing ID.
+func listDirMigrations() ([]string, error) {
 	entries, err := os.ReadDir("migrations")
 	if err != nil {
 		return nil, err
@@ -83,7 +86,8 @@ func listDir() ([]string, error) {
 	return migrations, nil
 }
 
-func run(tx *sql.Tx, filename string) error {
+// runScript executes the SQL script on the database.
+func runScript(tx *sql.Tx, filename string) error {
 	script, err := os.ReadFile(filename)
 	if err != nil {
 		return err
@@ -94,7 +98,8 @@ func run(tx *sql.Tx, filename string) error {
 	return nil
 }
 
-func register(tx *sql.Tx, migration string) error {
+// registerMigration inserts a new row for the given migration into the migration table.
+func registerMigration(tx *sql.Tx, migration string) error {
 	_, err := tx.Exec("INSERT INTO migration VALUES ($1)", migration)
 	if err != nil {
 		return fmt.Errorf("could not create migration: %v", err)
@@ -102,7 +107,8 @@ func register(tx *sql.Tx, migration string) error {
 	return nil
 }
 
-func unregister(tx *sql.Tx, migration string) error {
+// unregisterMigration deletes the row for the given migration from the migration table.
+func unregisterMigration(tx *sql.Tx, migration string) error {
 	_, err := tx.Exec("DELETE FROM migration WHERE id = $1", migration)
 	if err != nil {
 		return fmt.Errorf("could not delete migration: %v", err)
@@ -117,7 +123,7 @@ func doInit() error {
 	if err != nil {
 		return err
 	}
-	if err := initialize(db); err != nil {
+	if err := initMigrationTable(db); err != nil {
 		return err
 	}
 	return nil
@@ -129,7 +135,7 @@ func doStatus() error {
 		return err
 	}
 
-	migrations, err := listRun(db)
+	migrations, err := listAppliedMigrations(db)
 	if err != nil {
 		return err
 	}
@@ -194,22 +200,22 @@ func doUp() error {
 	}
 	defer tx.Rollback()
 
-	migrations, err := listDir()
+	migrations, err := listDirMigrations()
 	if err != nil {
 		return err
 	}
 	for _, id := range migrations {
-		ok, err := hasRun(db, id)
+		ok, err := isMigrationApplied(db, id)
 		if err != nil {
 			return err
 		}
 		if ok {
 			continue
 		}
-		if err := run(tx, *sourcedir+"/"+id+".up.sql"); err != nil {
+		if err := runScript(tx, *sourcedir+"/"+id+".up.sql"); err != nil {
 			return err
 		}
-		if err := register(tx, id); err != nil {
+		if err := registerMigration(tx, id); err != nil {
 			return err
 		}
 		fmt.Println("up", id)
@@ -243,7 +249,7 @@ func doDown() error {
 	}
 	_ = n
 
-	migrations, err := listRun(db)
+	migrations, err := listAppliedMigrations(db)
 	if err != nil {
 		return err
 	}
@@ -254,10 +260,10 @@ func doDown() error {
 		}
 		id := migrations[j].id
 		filename := fmt.Sprintf("%s/%s.down.sql", *sourcedir, id)
-		if err := run(tx, filename); err != nil {
+		if err := runScript(tx, filename); err != nil {
 			return err
 		}
-		if err := unregister(tx, id); err != nil {
+		if err := unregisterMigration(tx, id); err != nil {
 			return err
 		}
 		fmt.Println("down", id)
@@ -277,7 +283,7 @@ func main() {
 	flag.Parse()
 
 	if flag.NArg() < 1 {
-		log.Fatal("missing cmd")
+		log.Fatal("usage: fly <command>")
 	}
 
 	var (
