@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -111,6 +112,164 @@ func unregister(tx *sql.Tx, migration string) error {
 
 var sourcedir = flag.String("sourcedir", "migrations", "directory that contains database migration files")
 
+func doInit() error {
+	db, err := sql.Open("postgres", "")
+	if err != nil {
+		return err
+	}
+	if err := initialize(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func doStatus() error {
+	db, err := sql.Open("postgres", "")
+	if err != nil {
+		return err
+	}
+
+	migrations, err := listRun(db)
+	if err != nil {
+		return err
+	}
+
+	writer := tabwriter.NewWriter(os.Stdout, 1, 3, 1, ' ', 0)
+	format := "%s\t%s\n"
+	fmt.Fprintf(writer, format, "ID", "APPLIED")
+	fmt.Fprintf(writer, format, "--", "-------")
+	for _, m := range migrations {
+		fmt.Fprintf(writer, format, m.id, m.applied.Format(time.DateTime))
+	}
+	writer.Flush()
+
+	return nil
+}
+
+func doNew() error {
+	last := "0000_unnamed.up.sql"
+	entries, err := os.ReadDir(*sourcedir)
+	if err != nil {
+		return err
+	}
+	if len(entries) > 0 {
+		last = entries[len(entries)-1].Name()
+	}
+
+	serial, _, found := strings.Cut(last, "_")
+	if !found {
+		return errors.New("invalid filename: missing counter")
+	}
+	n, err := strconv.Atoi(serial)
+	if err != nil {
+		return fmt.Errorf("invalid filename: %s", err)
+	}
+
+	nextSerial := fmt.Sprintf("%04d", n+1)
+
+	label := flag.Arg(1)
+	if label == "" {
+		label = "unnamed"
+	}
+	label = strings.ReplaceAll(label, " ", "_")
+
+	for _, t := range []string{"up", "down"} {
+		filename := fmt.Sprintf("%s/%s_%s.%s.sql", *sourcedir, nextSerial, label, t)
+		if _, err := os.Create(filename); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func doUp() error {
+	db, err := sql.Open("postgres", "")
+	if err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	migrations, err := listDir()
+	if err != nil {
+		return err
+	}
+	for _, id := range migrations {
+		ok, err := hasRun(db, id)
+		if err != nil {
+			return err
+		}
+		if ok {
+			continue
+		}
+		if err := run(tx, *sourcedir+"/"+id+".up.sql"); err != nil {
+			return err
+		}
+		if err := register(tx, id); err != nil {
+			return err
+		}
+		fmt.Println("up", id)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func doDown() error {
+	db, err := sql.Open("postgres", "")
+	if err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	n := 1
+	if arg := flag.Arg(1); arg != "" {
+		var err error
+		n, err = strconv.Atoi(arg)
+		if err != nil {
+			return err
+		}
+	}
+	_ = n
+
+	migrations, err := listRun(db)
+	if err != nil {
+		return err
+	}
+	for i := 0; i < n; i++ {
+		j := len(migrations) - 1 - i
+		if j < 0 {
+			break
+		}
+		id := migrations[j].id
+		filename := fmt.Sprintf("%s/%s.down.sql", *sourcedir, id)
+		if err := run(tx, filename); err != nil {
+			return err
+		}
+		if err := unregister(tx, id); err != nil {
+			return err
+		}
+		fmt.Println("down", id)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("fly: ")
@@ -121,154 +280,25 @@ func main() {
 		log.Fatal("missing cmd")
 	}
 
-	cmd := flag.Arg(0)
+	var (
+		cmd = flag.Arg(0)
+		err error
+	)
 	switch cmd {
 	case "init":
-		db, err := sql.Open("postgres", "")
-		if err != nil {
-			log.Fatal(err)
-		}
-		if err := db.Ping(); err != nil {
-			log.Fatal(err)
-		}
-
-		if err := initialize(db); err != nil {
-			log.Fatal(err)
-		}
+		err = doInit()
 	case "status":
-		db, err := sql.Open("postgres", "")
-		if err != nil {
-			log.Fatal(err)
-		}
-		if err := db.Ping(); err != nil {
-			log.Fatal(err)
-		}
-
-		migrations, err := listRun(db)
-		if err != nil {
-			log.Fatal(err)
-		}
-		writer := tabwriter.NewWriter(os.Stdout, 1, 3, 1, ' ', 0)
-		format := "%s\t%s\n"
-		fmt.Fprintf(writer, format, "ID", "APPLIED")
-		fmt.Fprintf(writer, format, "--", "-------")
-		for _, m := range migrations {
-			fmt.Fprintf(writer, format, m.id, m.applied.Format(time.DateTime))
-		}
-		writer.Flush()
+		err = doStatus()
 	case "new":
-		last := "0000_unnamed.up.sql"
-		entries, err := os.ReadDir(*sourcedir)
-		if err != nil {
-			log.Fatal(err)
-		}
-		if len(entries) > 0 {
-			last = entries[len(entries)-1].Name()
-		}
-
-		serial, _, found := strings.Cut(last, "_")
-		if !found {
-			log.Fatal("invalid filename: missing counter")
-		}
-		n, err := strconv.Atoi(serial)
-		if err != nil {
-			log.Fatalf("invalid filename: %s", err)
-		}
-
-		nextSerial := fmt.Sprintf("%04d", n+1)
-
-		label := flag.Arg(1)
-		if label == "" {
-			label = "unnamed"
-		}
-		label = strings.ReplaceAll(label, " ", "_")
-
-		for _, t := range []string{"up", "down"} {
-			filename := fmt.Sprintf("%s/%s_%s.%s.sql", *sourcedir, nextSerial, label, t)
-			if _, err := os.Create(filename); err != nil {
-				log.Fatal(err)
-			}
-		}
+		err = doNew()
 	case "up":
-		db, err := sql.Open("postgres", "")
-		if err != nil {
-			log.Fatal(err)
-		}
-		tx, err := db.Begin()
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer tx.Rollback()
-
-		migrations, err := listDir()
-		if err != nil {
-			log.Fatal(err)
-		}
-		for _, id := range migrations {
-			ok, err := hasRun(db, id)
-			if err != nil {
-				log.Fatal(err)
-			}
-			if ok {
-				continue
-			}
-			fmt.Println(id)
-			if err := run(tx, *sourcedir+"/"+id+".up.sql"); err != nil {
-				log.Fatal(err)
-			}
-			if err := register(tx, id); err != nil {
-				log.Fatal(err)
-			}
-		}
-
-		if err := tx.Commit(); err != nil {
-			log.Fatal(err)
-		}
+		err = doUp()
 	case "down":
-		db, err := sql.Open("postgres", "")
-		if err != nil {
-			log.Fatal(err)
-		}
-		tx, err := db.Begin()
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer tx.Rollback()
-
-		n := 1
-		if arg := flag.Arg(1); arg != "" {
-			var err error
-			n, err = strconv.Atoi(arg)
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-		_ = n
-
-		migrations, err := listRun(db)
-		if err != nil {
-			log.Fatal(err)
-		}
-		for i := 0; i < n; i++ {
-			j := len(migrations) - 1 - i
-			if j < 0 {
-				break
-			}
-			id := migrations[j].id
-			filename := fmt.Sprintf("%s/%s.down.sql", *sourcedir, id)
-			if err := run(tx, filename); err != nil {
-				log.Fatal(err)
-			}
-			if err := unregister(tx, id); err != nil {
-				log.Fatal(err)
-			}
-			fmt.Println(id)
-		}
-
-		if err := tx.Commit(); err != nil {
-			log.Fatal(err)
-		}
+		err = doDown()
 	default:
-		log.Fatal("unknown cmd")
+		err = errors.New("unknown cmd")
+	}
+	if err != nil {
+		log.Fatal(err)
 	}
 }
