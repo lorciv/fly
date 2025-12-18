@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -27,8 +28,8 @@ type migration struct {
 	applied time.Time
 }
 
-// readDB reads all migrations that have been executed on the database.
-func readDB(db *sql.DB) ([]migration, error) {
+// listRun reads all migrations that have been executed on the database.
+func listRun(db *sql.DB) ([]migration, error) {
 	rows, err := db.Query("SELECT id, applied FROM migration ORDER BY id")
 	if err != nil {
 		return nil, err
@@ -47,6 +48,65 @@ func readDB(db *sql.DB) ([]migration, error) {
 		return nil, err
 	}
 	return records, nil
+}
+
+func hasRun(db *sql.DB, migration string) (bool, error) {
+	var found int
+	err := db.QueryRow("SELECT 1 FROM migration WHERE id = $1", migration).Scan(&found)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("could not check migration %s: %v", migration, err)
+	}
+	return true, nil
+}
+
+// listDir reads all migrations from the directory "migrations" sorted by increasing ID.
+func listDir() ([]string, error) {
+	entries, err := os.ReadDir("migrations")
+	if err != nil {
+		return nil, err
+	}
+
+	var migrations []string
+	for _, e := range entries {
+		id, found := strings.CutSuffix(e.Name(), ".up.sql")
+		if found {
+			migrations = append(migrations, id)
+		}
+	}
+
+	sort.Strings(migrations)
+
+	return migrations, nil
+}
+
+func run(tx *sql.Tx, filename string) error {
+	script, err := os.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(string(script)); err != nil {
+		return fmt.Errorf("could not run %s: %s", filename, err)
+	}
+	return nil
+}
+
+func register(tx *sql.Tx, migration string) error {
+	_, err := tx.Exec("INSERT INTO migration VALUES ($1)", migration)
+	if err != nil {
+		return fmt.Errorf("could not create migration: %v", err)
+	}
+	return nil
+}
+
+func unregister(tx *sql.Tx, migration string) error {
+	_, err := tx.Exec("DELETE FROM migration WHERE id = $1", migration)
+	if err != nil {
+		return fmt.Errorf("could not delete migration: %v", err)
+	}
+	return nil
 }
 
 var sourcedir = flag.String("sourcedir", "migrations", "directory that contains database migration files")
@@ -84,7 +144,7 @@ func main() {
 			log.Fatal(err)
 		}
 
-		migrations, err := readDB(db)
+		migrations, err := listRun(db)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -128,6 +188,41 @@ func main() {
 			if _, err := os.Create(filename); err != nil {
 				log.Fatal(err)
 			}
+		}
+	case "up":
+		db, err := sql.Open("postgres", "")
+		if err != nil {
+			log.Fatal(err)
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer tx.Rollback()
+
+		migrations, err := listDir()
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _, id := range migrations {
+			ok, err := hasRun(db, id)
+			if err != nil {
+				log.Fatal(err)
+			}
+			if ok {
+				continue
+			}
+			fmt.Println(id)
+			if err := run(tx, *sourcedir+"/"+id+".up.sql"); err != nil {
+				log.Fatal(err)
+			}
+			if err := register(tx, id); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			log.Fatal(err)
 		}
 	default:
 		log.Fatal("unknown cmd")
