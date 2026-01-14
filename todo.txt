@@ -1,0 +1,1 @@
+- show just the most recent migrations (e.g., 10) unless explicitly asked by the user
