@@ -68,7 +68,7 @@ func isMigrationApplied(db *sql.DB, migration string) (bool, error) {
 
 // listDirMigrations reads all migrations from the configured directory, sorted by increasing ID.
 func listDirMigrations() ([]string, error) {
-	entries, err := os.ReadDir("migrations")
+	entries, err := os.ReadDir(*sourcedir)
 	if err != nil {
 		return nil, err
 	}
