@@ -100,7 +100,7 @@ func runScript(tx *sql.Tx, filename string) error {
 
 // registerMigration inserts a new row for the given migration into the migration table.
 func registerMigration(tx *sql.Tx, migration string) error {
-	_, err := tx.Exec("INSERT INTO migration VALUES ($1)", migration)
+	_, err := tx.Exec("INSERT INTO migration (id) VALUES ($1)", migration)
 	if err != nil {
 		return fmt.Errorf("could not create migration: %v", err)
 	}
