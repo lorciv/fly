@@ -144,7 +144,7 @@ func doStatus() error {
 	format := "%s\t%s\n"
 	fmt.Fprintf(writer, format, "ID", "APPLIED")
 	fmt.Fprintf(writer, format, "--", "-------")
-	for _, m := range migrations {
+	for _, m := range migrations[:10] {
 		fmt.Fprintf(writer, format, m.id, m.applied.Format(time.DateTime))
 	}
 	writer.Flush()
