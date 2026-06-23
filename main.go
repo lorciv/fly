@@ -144,6 +144,9 @@ func doStatus() error {
 	format := "%s\t%s\n"
 	fmt.Fprintf(writer, format, "ID", "APPLIED")
 	fmt.Fprintf(writer, format, "--", "-------")
+	if len(migrations) > 10 {
+		fmt.Fprintf(writer, format, "...", "...")
+	}
 	for _, m := range migrations[len(migrations)-10:] {
 		fmt.Fprintf(writer, format, m.id, m.applied.Format(time.DateTime))
 	}
